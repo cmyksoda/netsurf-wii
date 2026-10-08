@@ -220,6 +220,7 @@ fbtk_event(fbtk_widget_t *root, nsfb_event_t *event, int timeout)
 			    (event->value.keycode <= NSFB_KEY_MOUSE_5)) {
 				fbtk_click(root, event);
 			} else {
+				fbtk_osk_key_event(event);
 				fbtk_input(root, event);
 			}
 			break;
@@ -301,6 +302,11 @@ int
 fbtk_keycode_to_ucs4(int code, fbtk_modifier_type mods)
 {
 	int ucs4 = -1;
+
+	if (code >= NSFB_KEY_CHARACTER) {
+		/* already shifted and laid out by the keyboard */
+		return code - NSFB_KEY_CHARACTER;
+	}
 
 	if (mods & FBTK_MOD_LSHIFT || mods & FBTK_MOD_RSHIFT) {
 		if ((code >= 0) && (code < (int) NOF_ELEMENTS(sh_keymap)))

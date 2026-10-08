@@ -36,6 +36,7 @@ struct gui_window {
 	struct fbtk_widget_s *history;
 	struct fbtk_widget_s *stop;
 	struct fbtk_widget_s *reload;
+	struct fbtk_widget_s *home;
 	struct fbtk_widget_s *close;
 	struct fbtk_widget_s *url;
 	struct fbtk_widget_s *status;

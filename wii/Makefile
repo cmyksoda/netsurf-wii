@@ -15,12 +15,14 @@ NETWORK_ROOT := $(DEPS_ROOT)/network
 INCLUDES := $(NETWORK_ROOT)/include $(LIBNSFB_ROOT)/include
 
 CFLAGS := -g -O2 -Wall -Wextra -Werror $(MACHDEP) $(INCLUDE)
-LDFLAGS := -g $(MACHDEP) -Wl,-Map,$(notdir $@).map
+LDFLAGS := -g $(MACHDEP) -Wl,-Map,$(notdir $@).map \
+	-Wl,--wrap,wiiuse_accept -Wl,--wrap,wiiuse_connect \
+	-Wl,--wrap,KEYBOARD_GetEvent -Wl,--wrap,MOUSE_GetEvent
 LIBS := -Wl,--whole-archive -lnsfb -Wl,--no-whole-archive \
 	-lcurl -lmbedtls -lmbedx509 -lmbedcrypto -lz -lwiisocket \
-	-lSDLmain -lSDL -laesnd -lwiiuse -lbte -lwiikeyboard -lfat \
+	-lSDLmain -lSDL -laesnd -lwiiuse -lwupc -lbte -lwiikeyboard -lfat \
 	-lopengx -logc -lm
-LIBDIRS := $(LIBNSFB_ROOT)/prefix $(NETWORK_ROOT) \
+LIBDIRS := $(LIBNSFB_ROOT)/prefix $(NETWORK_ROOT) $(DEPS_ROOT)/input/prefix \
 	/opt/devkitpro/portlibs/wii \
 	/opt/devkitpro/portlibs/ppc
 
@@ -40,7 +42,7 @@ export LIBPATHS := -L$(LIBOGC_LIB) \
 	$(foreach dir,$(LIBDIRS),-L$(dir)/lib)
 export LD := $(CC)
 
-.PHONY: all clean package run
+.PHONY: all clean package run $(BUILD)
 all: check-deps $(BUILD)
 
 check-deps:

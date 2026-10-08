@@ -62,7 +62,7 @@ jobs:
       - name: Verify package
         run: |
           test -s wii/dist/apps/netsurf/boot.dol
-          grep -Fq '<coder>quatric</coder>' wii/dist/apps/netsurf/meta.xml
+          grep -Eq '<coder>quatric(,|<)' wii/dist/apps/netsurf/meta.xml
           "$DEVKITPPC/bin/powerpc-eabi-nm" nsfb | grep -Fq WUPC_Init
           # WPAD_Data, not WPAD_IR: SDL-wii's own event pump reads channel
           # zero's IR position and A/B state directly out of the WPADData

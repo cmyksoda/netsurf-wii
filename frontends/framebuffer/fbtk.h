@@ -609,4 +609,30 @@ void fbtk_enable_oskb(fbtk_widget_t *widget);
  */
 void map_osk(void);
 
+/**
+ * hide the osk.
+ */
+void unmap_osk(void);
+
+/**
+ * Let the on screen keyboard follow a physical keyboard's Shift and Caps Lock.
+ *
+ * @param event A key event from the surface.
+ */
+void fbtk_osk_key_event(nsfb_event_t *event);
+
+/**
+ * Set a function to call after the on screen keyboard is shown or hidden.
+ *
+ * @param changed The function to call, or NULL for none.
+ */
+void fbtk_set_osk_callback(void (*changed)(void));
+
+/**
+ * Get the top edge of the on screen keyboard.
+ *
+ * @return The absolute y coordinate of the keyboard, or INT_MAX when hidden.
+ */
+int fbtk_osk_top(void);
+
 #endif

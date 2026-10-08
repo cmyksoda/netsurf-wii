@@ -119,7 +119,12 @@ fb_local_history_draw(struct fb_corewindow *fb_cw, struct rect *r)
 	/* technically degenerate container of */
 	lhw = (struct fb_local_history_window *)fb_cw;
 
-	local_history_redraw(lhw->session, 0, 0, r, &ctx);
+	/* the plotters take screen coordinates, and the window is not at the
+	 * screen's origin when the root widget is inset */
+	local_history_redraw(lhw->session,
+			     fbtk_get_absx(fb_cw->drawable) - fb_cw->scrollx,
+			     fbtk_get_absy(fb_cw->drawable) - fb_cw->scrolly,
+			     r, &ctx);
 
 	return NSERROR_OK;
 }

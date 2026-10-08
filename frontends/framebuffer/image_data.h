@@ -26,6 +26,7 @@ extern struct fbtk_bitmap right_arrow;
 extern struct fbtk_bitmap reload;
 extern struct fbtk_bitmap stop_image;
 extern struct fbtk_bitmap history_image;
+extern struct fbtk_bitmap home_image;
 
 extern struct fbtk_bitmap left_arrow_g;
 extern struct fbtk_bitmap right_arrow_g;
