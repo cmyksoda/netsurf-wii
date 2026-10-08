@@ -22,12 +22,51 @@ hub is recommended when the SD/USB storage device is also in use). Devices are
 hot-plugged, so they may be connected before or after NetSurf starts.
 
 - USB keyboard: text entry, browser shortcuts, arrows, Home/End, Page Up/Down,
-  function keys, and modifier keys work normally. Ctrl+P writes the current
-  page to `sd:/apps/netsurf/netsurf.pdf`.
+  function keys, and modifier keys work normally, and held keys repeat.
+  Characters follow the layout libogc picks from the Wii's system language, or
+  from a `wiikbd.map` file at the root of the SD card. Ctrl+P writes the
+  current page to `sd:/apps/netsurf/netsurf.pdf`.
 - USB mouse: relative motion moves the browser pointer; left, middle, and
   right buttons map to the corresponding browser buttons; the wheel scrolls.
-- Wii Remote: aim with IR; A and B are left and right click. Without IR, use
-  the D-pad to move the pointer. Home exits.
+- Wii Remote: aim with IR; A and B are left and right click. The D-pad sends
+  arrow keys, 1 and 2 are Page Up and Page Down, Plus and Minus zoom in and
+  out, and Home exits. A Nunchuk's stick scrolls.
+- Classic Controller, GameCube controller and Wii U Pro Controller: the left
+  (main) stick moves the pointer and the right stick (C-stick) scrolls. A and B
+  click, X and Y are Page Down and Page Up, Plus/Minus, ZR/ZL or R/L zoom, the
+  D-pad sends arrow keys, and Home (Start on a GameCube controller) exits.
+
+Clicking the URL bar or a text field on a page opens the on-screen keyboard,
+which the keyboard button at the bottom right also opens. For page fields it
+opens when the click is released, so clicking a field again after hiding the
+keyboard brings it back. While it is open the browser window shrinks to sit
+above it, and the page scrolls the field into view. Shift applies to the next
+key only; Caps Lock stays on and affects letters only, and Shift reverses it.
+Both also follow a USB keyboard's Shift and Caps Lock.
+Enter and Hide close the keyboard, and it also closes whenever a page starts
+loading, for example after a search or a link. The toolbar's Home button
+returns to the welcome page, whose bookmarks include
+[The Old Net](http://theoldnet.com/), an archive of 1990s and 2000s websites
+served for older browsers.
+
+While NetSurf starts it shows `loading.png` with a status line in Bree Serif
+(`fonts/BreeSerif-Regular.ttf`, under the SIL Open Font License in
+`fonts/BreeSerif-OFL.txt`). Until SDL sets its video mode the screen is drawn
+straight into the frame buffer on display, and afterwards into SDL's screen
+surface. SDL-wii blanks the screen twice on the way: starting its video
+subsystem replaces the frame buffer, so that is done before the loading
+screen is first drawn, and setting the video mode copies a black frame, so
+the loading screen is shown from a second frame buffer until SDL's own
+buffer has it. If networking fails, the error stays on
+screen for three seconds before the browser starts. Outside the TV-safe
+margin the screen is light blue (#94aeff) rather than black. The loading
+screen and Homebrew Channel icon are adapted from NetSurf's own logo
+artwork, which `COPYING` licenses under the MIT License.
+
+A standard definition TV signal blurs fine detail, so the package ships a
+`user.css` that gives text fields 2px black borders and a little extra
+spacing. It is a user style sheet, so it only applies where a page does not
+style its own fields.
 
 USB HID support targets boot-protocol keyboards and mice. It is experimental;
 there is no compatibility guarantee or end-user support for particular USB
@@ -38,16 +77,23 @@ devices.
 The Wii Remote cursor requires a visible Sensor Bar. Aim the Remote at the
 screen, keep the bar within its field of view, and remain within the usual
 Bluetooth range. If the cursor disappears, point the Remote at the Sensor Bar
-again; the D-pad remains available as a fallback while IR is unavailable.
-D-pad movement is intentionally slower than IR and is best used only to
-recover the pointer or make small adjustments. Slow page loading is separate
-from pointer movement and is expected on complex modern sites.
+again; without IR the pointer cannot be aimed, but a Classic Controller,
+GameCube controller or Wii U Pro Controller stick can still move it. Slow page
+loading is separate from pointer movement and is expected on complex modern
+sites.
 
 When testing in Dolphin, install the complete `apps/netsurf` directory into
 Dolphin's emulated SD card. Opening `boot.dol` directly does not make sibling
 host files visible as `sd:/apps/netsurf`, so the browser will start without
 its Messages, CSS, or welcome page. Runtime progress is written to Dolphin's
 OSReport log under the `NetSurf Wii:` prefix.
+
+Set Dolphin's texture cache accuracy to Safe (Graphics > Advanced, or
+`SafeTextureCacheColorSamples = 0` in `GFX.ini`). SDL-wii presents the whole
+screen as one GX texture, and the faster settings only sample it for changes,
+so pointer movement and other small updates can appear frozen until something
+larger redraws. The USB keyboard and mouse path has not been exercised in
+Dolphin and needs testing on real hardware.
 
 ## Prerequisites
 
@@ -131,25 +177,47 @@ NetSurf fetcher -> libcurl -> libogc BSD sockets -> Wii network interface
   synthesise those a second time. It does call `WPAD_ScanPads()`, because that
   is what keeps SDL's handling supplied with fresh data, and it rate limits
   every hardware poll to 16 ms. Remotes two to four contribute their buttons
-  through the patch's own path.
-- malloc is routed at libogc's MEM2 arena (`MALLOC_MEM2` in
-  `frontends/framebuffer/wii_compat.c`). Without it libogc serves every
-  allocation from arena 1 in MEM1, which the executable, SDL's surfaces and the
-  GX FIFO have already largely consumed, and the low-memory profile's budgets
-  cannot be met. MEM2 has higher latency than MEM1, so this trades some speed
-  for roughly 50 MiB of usable heap.
-- The framebuffer is 640x480x32. Dropping to 16bpp would halve both the plot
-  and the GX texture conversion bandwidth, but NetSurf's 16bpp plotters and
-  SDL-wii's 16bpp path are untested here.
-- Both the `libnsfb` patch and SDL-wii's event pump drain libogc's USB HID
-  queues with `KEYBOARD_GetEvent()` and `MOUSE_GetEvent()`. Reads are
-  destructive, so the two paths race for each report and a given keystroke
-  reaches NetSurf through whichever won. This needs resolving in favour of one
-  path; it has not been done.
-- Wii U Pro Controllers are detected through libwupc before SDL initializes
-  WPAD. GlowWii-style four-channel aggregation gives them precedence over
-  GameCube pads. A/B click, the D-pad sends arrows, Plus/Minus send `+`/`-`,
-  X/Y send Page Down/Page Up, and Home sends Escape.
+  through the patch's own path. The patch must not call `WPAD_SetVRes()`:
+  SDL-wii gives channel zero an IR range 1.25 times the screen and subtracts
+  that margin itself, so a 640x480 range left the pointer unable to pass
+  x=552 or y=398, which put the on-screen keyboard's bottom row out of reach.
+- malloc moves on from MEM1 into the larger MEM2 arena once MEM1 runs out.
+  This is libogc's default; `MALLOC_MEM2` in
+  `frontends/framebuffer/wii_compat.c` only restates it. MEM2 has higher
+  latency than MEM1, but NetSurf's working set does not fit in MEM1 alone.
+- SDL-wii's `UpdateRects` wakes its presentation thread without that
+  thread's lock, so an update made while it was drawing stayed off screen
+  until the next one, which left stale strips after scrolling. The `libnsfb`
+  patch collects a redraw pass's updates and sends them together when NetSurf
+  next asks for input, then wakes the thread again for a few frames.
+- Decoded images are stored as native 0xAABBGGRR words
+  (`bitmap_set_format()` in `gui.c`), which is what libnsfb reads, so plotting
+  needs no per-frame copy or byte swapping. The compiled-in toolbar icons and
+  pointers are generated in the same format by `tools/convert_image.c`.
+- The framebuffer is 640x480x32, or 848x480x32 when the Wii is set to 16:9
+  (`wii_screen_width()`): SDL-wii squeezes that mode into the TV signal and a
+  widescreen TV stretches it back, so pages keep their shape and gain width.
+  The loading screen is centred across the wider mode with its edge colours
+  carried out to the sides, and the on-screen keyboard keeps its 4:3 height.
+  Dropping to 16bpp would halve both the plot and the GX texture conversion
+  bandwidth, but NetSurf's 16bpp plotters and SDL-wii's 16bpp path are
+  untested here.
+- SDL-wii's event pump would also drain libogc's destructive USB HID queues,
+  so each report reached only one of the two readers. The browser links with
+  `--wrap` for `KEYBOARD_GetEvent` and `MOUSE_GetEvent`: SDL-wii always finds
+  the queues empty and the `libnsfb` patch is the only reader. The patch passes
+  libogc's layout-aware characters on as `NSFB_KEY_CHARACTER` plus the
+  character, a key code range the patch adds to `libnsfb_event.h`, so the
+  framebuffer frontend's own (UK) shift table does not shift them again. The
+  on-screen keyboard sends its characters the same way, and its labels follow
+  a USB keyboard's Shift and Caps Lock.
+- libogc's USB mouse driver turns the wheel off for good the first time a
+  report carries a wheel step other than -1, 0 or 1, which a fast flick can
+  do; unplugging and reconnecting the mouse brings it back. This is in
+  `libogc/usbmouse.c` (`_mouse_event_cb`) and is best fixed there.
+- Wii U Pro Controllers are handled through libwupc. GlowWii-style
+  four-channel aggregation gives them precedence over Wii Remote buttons and
+  GameCube pads; their mapping is listed under Controls.
 - WebP image decoding is enabled; JPEG XL is excluded to keep the browser and
   its dependency set smaller. PDF export uses libharu and a fixed output path;
   a Wii-native filename picker has not been implemented.
@@ -159,9 +227,9 @@ NetSurf fetcher -> libcurl -> libogc BSD sockets -> Wii network interface
   NetSurf does not implement.
 - Cookies and the CA bundle are redirected to `sd:/apps/netsurf/`; downloads
   and user choices still need Wii-specific defaults and runtime testing.
-- Network startup is asynchronous so a missing Dolphin network configuration
-  does not prevent the UI from appearing. The initial page is local; network
-  requests made before socket startup completes can fail and may need reload.
+- NetSurf waits for network startup before showing the UI, so the first
+  fetches do not race DHCP. If networking fails it logs the error and starts
+  anyway; local pages still work.
 
 The small `libnsfb` patch adds devkitPPC/newlib endian detection and Wii input
 polling. It is kept separate so it can be proposed upstream.

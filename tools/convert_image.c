@@ -213,7 +213,7 @@ main(int argc, char **argv)
 	FILE *f;
 	unsigned char buffer[1024];
 	int br;
-	int x, y, c;
+	int x, y;
 
 	if (argc != 4) {
 		usage();
@@ -266,7 +266,9 @@ main(int argc, char **argv)
 	fprintf(f, "#include \"framebuffer/gui.h\"\n");
 	fprintf(f, "#include \"framebuffer/fbtk.h\"\n\n");
 
-	fprintf(f, "static uint8_t %s_pixdata[] = {\n", argv[3]);
+	/* Emit 0xAABBGGRR words rather than R,G,B,A bytes so the pixels are
+	 * correct nsfb_colour_t values on hosts of either endianness. */
+	fprintf(f, "static uint32_t %s_pixdata[] = {\n", argv[3]);
 	for (y = 0; y < HEIGHT; ++y) {
 		unsigned char *rowptr = bitmap_data + (rowstride * y);
 		if (is_cursor) {
@@ -275,10 +277,9 @@ main(int argc, char **argv)
 		}
 		fprintf(f, "\t");
 		for (x = 0; x < WIDTH; ++x) {
-			for (c = 0; c < 4; ++c) {
-				unsigned char b = *rowptr++;
-				fprintf(f, "0x%02x, ", b);
-			}
+			fprintf(f, "0x%02x%02x%02x%02x, ",
+				rowptr[3], rowptr[2], rowptr[1], rowptr[0]);
+			rowptr += 4;
 		}
 		fprintf(f, "\n");
 	}
@@ -289,7 +290,7 @@ main(int argc, char **argv)
 	fprintf(f, "\t.height\t\t= %d,\n", HEIGHT);
 	fprintf(f, "\t.hot_x\t\t= %d,\n", HOT_X);
 	fprintf(f, "\t.hot_y\t\t= %d,\n", HOT_Y);
-	fprintf(f, "\t.pixdata\t= %s_pixdata,\n", argv[3]);
+	fprintf(f, "\t.pixdata\t= (uint8_t *)%s_pixdata,\n", argv[3]);
 
 	fprintf(f, "};\n\n");
 	fclose(f);

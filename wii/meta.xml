@@ -1,12 +1,9 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <app version="1">
   <name>NetSurf Wii</name>
-  <coder>quatric</coder>
-  <version>0.1.0</version>
-  <release_date>20260801</release_date>
-  <short_description>Experimental NetSurf web browser port</short_description>
-  <long_description>
-    Experimental Wii port of the NetSurf framebuffer web browser using
-    libnsfb, SDL, curl, mbedTLS, and libwupc.
-  </long_description>
+  <coder>quatric, cmyksoda</coder>
+  <version>0.2.0</version>
+  <release_date>20261007</release_date>
+  <short_description>NetSurf 3.12 Dev — Experimental</short_description>
+  <long_description>Experimental Wii port of the NetSurf web browser using libnsfb, SDL, curl, mbedTLS, and libwupc.</long_description>
 </app>

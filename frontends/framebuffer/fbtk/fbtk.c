@@ -77,22 +77,15 @@ dump_tk_tree(fbtk_widget_t *widget)
 
 #endif 
 
-/* exported function documented in fbtk.h */
-void
-fbtk_request_redraw(fbtk_widget_t *widget)
+/* flag a widget and all of its children for a full redraw */
+static void
+request_redraw_tree(fbtk_widget_t *widget)
 {
 	fbtk_widget_t *cwidget;
-	fbtk_widget_t *pwidget;
 
-	assert(widget != NULL);
-
-	/* if widget not mapped do not try to redraw it */
-	pwidget = widget;
-	while (pwidget != NULL) {
-		if (pwidget->mapped == false)
-			return;
-		pwidget = pwidget->parent;
-	}
+	/* children of a hidden widget are not hidden themselves */
+	if (widget->mapped == false)
+		return;
 
 	widget->redraw.needed = true;
 	widget->redraw.x = 0;
@@ -108,11 +101,60 @@ fbtk_request_redraw(fbtk_widget_t *widget)
 	      widget->redraw.width,
 	      widget->redraw.height);
 
+	if (widget->last_child != NULL)
+		widget->redraw.child = true;
+
 	cwidget = widget->last_child;
 	while (cwidget != NULL) {
-		fbtk_request_redraw(cwidget);
+		request_redraw_tree(cwidget);
 		cwidget = cwidget->prev;
 	}
+}
+
+/* Widgets plot straight over whatever is beneath them, so any mapped widget
+ * stacked above a redrawn one (such as the on-screen keyboard) is redrawn
+ * after it rather than being painted over. */
+static void
+request_redraw_above(fbtk_widget_t *widget)
+{
+	fbtk_widget_t *level;
+	fbtk_widget_t *above;
+	nsfb_bbox_t box;
+	nsfb_bbox_t above_box;
+
+	fbtk_get_bbox(widget, &box);
+
+	for (level = widget; level->parent != NULL; level = level->parent) {
+		for (above = level->prev; above != NULL; above = above->prev) {
+			if (above->mapped == false)
+				continue;
+
+			fbtk_get_bbox(above, &above_box);
+			if ((above_box.x0 < box.x1) && (box.x0 < above_box.x1) &&
+			    (above_box.y0 < box.y1) && (box.y0 < above_box.y1))
+				fbtk_request_redraw(above);
+		}
+	}
+}
+
+/* exported function documented in fbtk.h */
+void
+fbtk_request_redraw(fbtk_widget_t *widget)
+{
+	fbtk_widget_t *pwidget;
+
+	assert(widget != NULL);
+
+	/* if widget not mapped do not try to redraw it */
+	pwidget = widget;
+	while (pwidget != NULL) {
+		if (pwidget->mapped == false)
+			return;
+		pwidget = pwidget->parent;
+	}
+
+	request_redraw_tree(widget);
+	request_redraw_above(widget);
 
 	while (widget->parent != NULL) {
 		widget = widget->parent;
@@ -631,6 +673,9 @@ do_redraw(nsfb_t *nsfb, fbtk_widget_t *widget)
 {
 	nsfb_bbox_t plot_ctx;
 	fbtk_widget_t *cwidget; /* child widget */
+
+	if (widget->mapped == false)
+		return 0;
 
 	/* check if the widget requires redrawing */
 	if (widget->redraw.needed == true) {

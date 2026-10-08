@@ -66,16 +66,17 @@ make -C "$SOURCE_ROOT" \
 
 mkdir -p "$PACKAGE_DIR"
 elf2dol "$SOURCE_ROOT/nsfb" "$PACKAGE_DIR/boot.dol"
-if ! grep -Fq '<coder>quatric</coder>' "$SCRIPT_DIR/meta.xml"; then
+if ! grep -Eq '<coder>quatric(,|<)' "$SCRIPT_DIR/meta.xml"; then
 	echo "Refusing to package meta.xml without the quatric coder credit" >&2
 	exit 1
 fi
 
 cp "$SCRIPT_DIR/meta.xml" "$SCRIPT_DIR/icon.png" "$SCRIPT_DIR/cacert.pem" \
-	"$SCRIPT_DIR/js-smoke.html" "$PACKAGE_DIR/"
+	"$SCRIPT_DIR/js-smoke.html" "$SCRIPT_DIR/welcome.html" \
+	"$SCRIPT_DIR/user.css" "$SCRIPT_DIR/loading.png" "$PACKAGE_DIR/"
 
 for resource in adblock.css credits.html default.css internal.css \
-	licence.html netsurf.png quirks.css welcome.html; do
+	licence.html netsurf.png quirks.css; do
 	cp -L "$SOURCE_ROOT/frontends/framebuffer/res/$resource" "$PACKAGE_DIR/"
 done
 cp "$SOURCE_ROOT/frontends/framebuffer/res/en/Messages" \
@@ -85,5 +86,7 @@ cp "$RODIN_REGULAR_SOURCE" "$PACKAGE_DIR/fonts/RodinNTLG-M.otf"
 cp "$RODIN_BOLD_SOURCE" "$PACKAGE_DIR/fonts/RodinNTLG-B.otf"
 chmod 0644 "$PACKAGE_DIR/fonts/RodinNTLG-M.otf" \
 	"$PACKAGE_DIR/fonts/RodinNTLG-B.otf"
+cp "$SCRIPT_DIR/fonts/BreeSerif-Regular.ttf" "$SCRIPT_DIR/fonts/BreeSerif-OFL.txt" \
+	"$PACKAGE_DIR/fonts/"
 
 echo "Packaged Wii browser at $PACKAGE_DIR"

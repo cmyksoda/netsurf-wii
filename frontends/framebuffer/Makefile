@@ -58,6 +58,7 @@ ifeq ($(NETSURF_WII),YES)
   LDFLAGS += -lSDLmain -lSDL -laesnd -lwiiuse -lwupc -lbte -lwiikeyboard \
 	-lfat -lopengx -logc -lm
   LDFLAGS += -Wl,--wrap,wiiuse_accept -Wl,--wrap,wiiuse_connect
+  LDFLAGS += -Wl,--wrap,KEYBOARD_GetEvent -Wl,--wrap,MOUSE_GetEvent
   LDFLAGS += -liconv
 else
   LDFLAGS += -Wl,--whole-archive
@@ -101,6 +102,7 @@ FB_IMAGE_right_arrow := icons/forward.png
 FB_IMAGE_reload := icons/reload.png
 FB_IMAGE_stop_image := icons/stop.png
 FB_IMAGE_history_image := icons/history.png
+FB_IMAGE_home_image := icons/home.png
 
 FB_IMAGE_left_arrow_g := icons/back_g.png
 FB_IMAGE_right_arrow_g := icons/forward_g.png
@@ -186,7 +188,7 @@ S_FRONTEND := gui.c framebuffer.c schedule.c bitmap.c fetch.c	\
 	findfile.c corewindow.c local_history.c clipboard.c
 
 ifeq ($(NETSURF_WII),YES)
-  S_FRONTEND += wii_compat.c
+  S_FRONTEND += wii_compat.c wii_loading.c
 endif
 
 # toolkit sources

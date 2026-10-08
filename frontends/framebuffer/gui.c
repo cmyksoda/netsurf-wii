@@ -31,11 +31,16 @@
 #include <libnsfb_event.h>
 
 #ifdef GEKKO
+#include <unistd.h>
 #include <fat.h>
 #include <ogc/system.h>
 #include <wiisocket.h>
 #include "framebuffer/wii_compat.h"
+#include "framebuffer/wii_loading.h"
 #define WII_LOG(...) SYS_Report("NetSurf Wii: " __VA_ARGS__)
+
+/* #94aeff, behind the browser outside the TV-safe margin */
+#define WII_BACKGROUND_COLOUR 0xffffae94
 #else
 #define WII_LOG(...) ((void)0)
 #endif
@@ -53,6 +58,7 @@
 #include "netsurf/misc.h"
 #include "netsurf/netsurf.h"
 #include "netsurf/cookie_db.h"
+#include "netsurf/bitmap.h"
 #include "content/fetch.h"
 
 #if defined(GEKKO) && defined(WITH_PDF_EXPORT)
@@ -75,7 +81,12 @@
 #include "framebuffer/corewindow.h"
 
 
+#ifdef GEKKO
+/* home leads back to the welcome page and its bookmarks */
+#define NSFB_TOOLBAR_DEFAULT_LAYOUT "blfsrhutc"
+#else
 #define NSFB_TOOLBAR_DEFAULT_LAYOUT "blfsrutc"
+#endif
 
 fbtk_widget_t *fbtk;
 
@@ -510,7 +521,7 @@ process_cmdline(int argc, char** argv)
 	fewidth = nsoption_int(window_width);
 	if (fewidth <= 0) {
 #ifdef GEKKO
-		fewidth = 640;
+		fewidth = wii_screen_width();
 #else
 		fewidth = 800;
 #endif
@@ -689,16 +700,6 @@ static void framebuffer_run(void)
 			if ((event.type == NSFB_EVENT_CONTROL) &&
 			    (event.value.controlcode ==  NSFB_CONTROL_QUIT))
 				fb_complete = true;
-#ifdef GEKKO
-			/* The Wii Remote HOME button is mapped to
-			 * NSFB_KEY_ESCAPE by the surface layer; there is no
-			 * window manager on real hardware to ever deliver
-			 * NSFB_CONTROL_QUIT, so without this the app could
-			 * never be exited. */
-			if ((event.type == NSFB_EVENT_KEY_DOWN) &&
-			    (event.value.keycode == NSFB_KEY_ESCAPE))
-				fb_complete = true;
-#endif
 		}
 
 		fbtk_redraw(fbtk);
@@ -712,6 +713,26 @@ static void gui_quit(void)
 	urldb_save_cookies(nsoption_charp(cookie_jar));
 
 	framebuffer_finalise();
+}
+
+/* open the on screen keyboard if the page has a caret, keeping it in view */
+static void
+fb_osk_show_for_caret(struct gui_window *gw)
+{
+	struct browser_widget_s *bwidget = fbtk_get_userpw(gw->browser);
+	int c_x, c_y, c_h;
+	int visible;
+
+	if (!fbtk_get_caret(gw->browser, &c_x, &c_y, &c_h))
+		return;
+
+	map_osk();
+
+	visible = fbtk_get_height(gw->browser);
+	if (c_y + c_h - bwidget->scrolly > visible) {
+		widget_scroll_y(gw, c_y + 2 * c_h - bwidget->scrolly - visible,
+				false);
+	}
 }
 
 /* called back when click in browser window */
@@ -859,6 +880,11 @@ fb_browser_window_click(fbtk_widget_t *widget, fbtk_callback_info *cbi)
 		if (mouse) {
 			browser_window_mouse_click(gw->bw, mouse, x, y);
 		}
+
+		/* Opening the keyboard on the press would shrink the window
+		 * from under the pointer and deliver this release elsewhere. */
+		if ((mouse & BROWSER_MOUSE_CLICK_1) && nsoption_bool(fb_osk))
+			fb_osk_show_for_caret(gw);
 
 		last_click.time = time_now;
 
@@ -1210,6 +1236,27 @@ fb_reload_click(fbtk_widget_t *widget, fbtk_callback_info *cbi)
 	return 1;
 }
 
+static int
+fb_home_click(fbtk_widget_t *widget, fbtk_callback_info *cbi)
+{
+	struct browser_window *bw = cbi->context;
+	const char *home = nsoption_charp(homepage_url);
+	nsurl *url;
+
+	if (cbi->event->type != NSFB_EVENT_KEY_UP)
+		return 0;
+
+	if ((home == NULL) || (home[0] == '\0'))
+		home = NETSURF_HOMEPAGE;
+
+	if (nsurl_create(home, &url) == NSERROR_OK) {
+		browser_window_navigate(bw, url, NULL, BW_NAVIGATE_HISTORY,
+				NULL, NULL, NULL);
+		nsurl_unref(url);
+	}
+	return 1;
+}
+
 /* stop icon click routine */
 static int
 fb_stop_click(fbtk_widget_t *widget, fbtk_callback_info *cbi)
@@ -1480,6 +1527,20 @@ create_toolbar(struct gui_window *gw,
 			gw->reload = widget;
 			break;
 
+		case 'h': /* home */
+			widget = fbtk_create_button(toolbar,
+						    (xdir == 1)?xpos :
+						     xpos - home_image.width,
+						    padding,
+						    home_image.width,
+						    -padding,
+						    frame_col,
+						    &home_image,
+						    fb_home_click,
+						    gw->bw);
+			gw->home = widget;
+			break;
+
 		case 't': /* throbber/activity indicator */
 			widget = fbtk_create_bitmap(toolbar,
 						    (xdir == 1)?xpos : 
@@ -1652,6 +1713,14 @@ resize_toolbar(struct gui_window *gw,
 			h = -padding;
 			break;
 
+		case 'h': /* home */
+			widget = gw->home;
+			x = (xdir == 1) ? xpos : xpos - home_image.width;
+			y = padding;
+			w = home_image.width;
+			h = -padding;
+			break;
+
 		case 't': /* throbber/activity indicator */
 			widget = gw->throbber;
 			x = (xdir == 1) ? xpos : xpos - throbber0.width;
@@ -1740,10 +1809,11 @@ create_browser_widget(struct gui_window *gw, int toolbar_height, int furniture_w
 
 static void
 resize_browser_widget(struct gui_window *gw, int x, int y,
-		int width, int height)
+		int width, int height, bool reformat)
 {
 	fbtk_set_pos_and_size(gw->browser, x, y, width, height);
-	browser_window_schedule_reformat(gw->bw);
+	if (reformat)
+		browser_window_schedule_reformat(gw->bw);
 }
 
 static void
@@ -1850,8 +1920,23 @@ create_normal_browser_window(struct gui_window *gw, int furniture_width)
 	fbtk_set_focus(gw->browser);
 }
 
+/* Browser windows stop above the on screen keyboard rather than under it,
+ * so nothing drawn in them has to be kept from painting over it. */
+static int
+fb_window_height(fbtk_widget_t *parent)
+{
+	int height = fbtk_get_height(parent);
+	int osk_top = fbtk_osk_top();
+
+	if ((osk_top != INT_MAX) && (osk_top - fbtk_get_absy(parent) < height))
+		height = osk_top - fbtk_get_absy(parent);
+
+	return height;
+}
+
 static void
-resize_normal_browser_window(struct gui_window *gw, int furniture_width)
+resize_normal_browser_window(struct gui_window *gw, int furniture_width,
+		bool reformat)
 {
 	bool resized;
 	int width, height;
@@ -1859,7 +1944,8 @@ resize_normal_browser_window(struct gui_window *gw, int furniture_width)
 	int toolbar_height = fbtk_get_height(gw->toolbar);
 
 	/* Resize the main window widget */
-	resized = fbtk_set_pos_and_size(gw->window, 0, 0, 0, 0);
+	resized = fbtk_set_pos_and_size(gw->window, 0, 0, 0,
+			fb_window_height(fbtk));
 	if (!resized)
 		return;
 
@@ -1886,7 +1972,8 @@ resize_normal_browser_window(struct gui_window *gw, int furniture_width)
 	resize_browser_widget(gw,
 			0, toolbar_height,
 			width - furniture_width,
-			height - furniture_width - toolbar_height);
+			height - furniture_width - toolbar_height,
+			reformat);
 }
 
 static void gui_window_add_to_window_list(struct gui_window *gw)
@@ -2179,6 +2266,9 @@ throbber_advance(void *pw)
 static void
 gui_window_start_throbber(struct gui_window *g)
 {
+	/* typing is over once a search or address starts loading */
+	unmap_osk();
+
 	g->throbber_index = 0;
 	framebuffer_schedule(100, throbber_advance, g);
 }
@@ -2294,6 +2384,23 @@ static struct gui_misc_table framebuffer_misc_table = {
 	.quit = gui_quit,
 };
 
+/* Called when the on screen keyboard is shown or hidden. */
+static void
+fb_osk_changed(void)
+{
+	struct gui_window *gw;
+
+	for (gw = window_list; gw != NULL; gw = gw->next) {
+		/* Like a phone, shrink only what is visible; laying the
+		 * page out again for the new height would be slow. */
+		resize_normal_browser_window(gw,
+				nsoption_int(fb_furniture_size), false);
+		widget_scroll_y(gw, 0, false);
+		gui_window_update_extent(gw);
+		fbtk_request_redraw(gw->window);
+	}
+}
+
 /**
  * Entry point from OS.
  *
@@ -2326,13 +2433,24 @@ main(int argc, char** argv)
 	WII_LOG("entry\n");
 	fatInitDefault();
 	WII_LOG("FAT initialised\n");
+	wii_loading_start(NETSURF_FB_RESPATH "/loading.png",
+			NETSURF_FB_FONTPATH "/BreeSerif-Regular.ttf",
+			wii_screen_width());
+	wii_loading_status("Connecting to the network", true);
 	/* Block until the network interface is actually usable: an
 	 * async init would let curl fetches race the IOS network
 	 * stack/DHCP negotiation and fail with "unable to connect".
 	 */
 	ret = wiisocket_init();
 	if (ret < 0) {
+		char status[64];
+
 		fprintf(stderr, "Unable to start Wii networking (%d)\n", ret);
+		snprintf(status, sizeof(status),
+				"No network connection (error %d)", ret);
+		wii_loading_status(status, false);
+		/* long enough to read before the browser starts anyway */
+		sleep(3);
 	}
 	WII_LOG("network startup complete (%d)\n", ret);
 #endif
@@ -2374,6 +2492,10 @@ main(int argc, char** argv)
 		fprintf(stderr, "Message translations failed to load\n");
 	}
 
+#ifdef GEKKO
+	wii_loading_status("Starting NetSurf", true);
+#endif
+
 	/* common initialisation */
 	ret = netsurf_init(NULL);
 	if (ret != NSERROR_OK) {
@@ -2381,17 +2503,29 @@ main(int argc, char** argv)
 	}
 	WII_LOG("core initialised\n");
 
+	/* libnsfb reads bitmap pixels as native 0xAABBGGRR words, which only
+	 * matches the core's default byte-wise RGBA on little endian hosts. */
+	bitmap_set_format(&(bitmap_fmt_t) {
+		.layout = BITMAP_LAYOUT_ABGR8888,
+	});
+
 	/* Override, since we have no support for non-core SELECT menu */
 	nsoption_set_bool(core_select_menu, true);
 
 	if (process_cmdline(argc,argv) != true)
 		die("unable to process command line.\n");
 
+#ifdef GEKKO
+	wii_loading_hold();
+#endif
 	nsfb = framebuffer_initialise(fename, fewidth, feheight, febpp);
 	if (nsfb == NULL)
 		die("Unable to initialise framebuffer");
 	WII_LOG("framebuffer initialised (%s %dx%dx%d)\n",
 		fename, fewidth, feheight, febpp);
+#ifdef GEKKO
+	wii_loading_status("Loading fonts", true);
+#endif
 
 	framebuffer_set_cursor(&pointer_image);
 
@@ -2422,6 +2556,7 @@ main(int argc, char** argv)
 #endif
 
 	fbtk_enable_oskb(fbtk);
+	fbtk_set_osk_callback(fb_osk_changed);
 
 	urldb_load_cookies(nsoption_charp(cookie_file));
 
@@ -2439,6 +2574,31 @@ main(int argc, char** argv)
 					      &bw);
 		nsurl_unref(url);
 	}
+#ifdef GEKKO
+	{
+		int x0 = fbtk_get_absx(fbtk);
+		int y0 = fbtk_get_absy(fbtk);
+		int x1 = x0 + fbtk_get_width(fbtk);
+		int y1 = y0 + fbtk_get_height(fbtk);
+		nsfb_bbox_t screen = { 0, 0, fewidth, feheight };
+		nsfb_bbox_t edges[] = {
+			{ 0, 0, fewidth, y0 },
+			{ 0, y1, fewidth, feheight },
+			{ 0, y0, x0, y1 },
+			{ x1, y0, fewidth, y1 },
+		};
+		unsigned int edge;
+
+		/* only the border: the loading screen stays inside it until
+		 * the browser first draws over it */
+		wii_loading_finish();
+		nsfb_plot_set_clip(nsfb, &screen);
+		for (edge = 0; edge < sizeof(edges) / sizeof(edges[0]); edge++)
+			nsfb_plot_rectangle_fill(nsfb, &edges[edge],
+					WII_BACKGROUND_COLOUR);
+		nsfb_update(nsfb, &screen);
+	}
+#endif
 	if (ret != NSERROR_OK) {
 		fb_warn_user("Errorcode:", messages_get_errorcode(ret));
 	} else {
@@ -2483,7 +2643,7 @@ void gui_resize(fbtk_widget_t *root, int width, int height)
 
 	for (gw = window_list; gw != NULL; gw = gw->next) {
 		resize_normal_browser_window(gw,
-				nsoption_int(fb_furniture_size));
+				nsoption_int(fb_furniture_size), true);
 	}
 
 	fbtk_request_redraw(root);

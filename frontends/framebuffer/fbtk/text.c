@@ -302,6 +302,7 @@ static int
 text_input(fbtk_widget_t *widget, fbtk_callback_info *cbi)
 {
 	int value;
+	int ucs4;
 	static fbtk_modifier_type modifier = FBTK_MOD_CLEAR;
 	char *temp;
 	plot_font_style_t font_style;
@@ -442,6 +443,12 @@ text_input(fbtk_widget_t *widget, fbtk_callback_info *cbi)
 			break;
 		}
 
+		/* The text is UTF-8 and edited a byte at a time, so only
+		 * printable ASCII can go in; this also skips unmapped keys. */
+		ucs4 = fbtk_keycode_to_ucs4(value, modifier);
+		if (ucs4 < 0x20 || ucs4 > 0x7e)
+			break;
+
 		/* allow for new character and null */
 		temp = realloc(widget->u.text.text, widget->u.text.len + 2);
 		if (temp == NULL) {
@@ -452,8 +459,7 @@ text_input(fbtk_widget_t *widget, fbtk_callback_info *cbi)
 		memmove(widget->u.text.text + widget->u.text.idx + 1,
 				widget->u.text.text + widget->u.text.idx,
 				widget->u.text.len - widget->u.text.idx);
-		widget->u.text.text[widget->u.text.idx] =
-				fbtk_keycode_to_ucs4(value, modifier);
+		widget->u.text.text[widget->u.text.idx] = ucs4;
 		widget->u.text.idx++;
 		widget->u.text.len++;
 		widget->u.text.text[widget->u.text.len] = '\0';

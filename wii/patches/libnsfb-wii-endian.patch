@@ -1,3 +1,18 @@
+diff --git a/include/libnsfb_event.h b/include/libnsfb_event.h
+index f98b5ba..39d20db 100644
+--- a/include/libnsfb_event.h
++++ b/include/libnsfb_event.h
+@@ -177,6 +177,10 @@ enum nsfb_key_code_e {
+     NSFB_KEY_MOUSE_4 = 404,
+     NSFB_KEY_MOUSE_5 = 405,
+ 
++    /** Codes from here on are this plus a Unicode character that the
++     * keyboard has already shifted and laid out, so it must not be shifted
++     * again. */
++    NSFB_KEY_CHARACTER = 0x10000,
+ };
+ 
+ enum nsfb_control_e {
 diff --git a/src/plot.h b/src/plot.h
 index db60ea9..d6968e1 100644
 --- a/src/plot.h
@@ -16,48 +31,17 @@ index db60ea9..d6968e1 100644
      #if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
          #define NSFB_BE_BYTE_ORDER
 diff --git a/src/plot/32bpp-xbgr8888.c b/src/plot/32bpp-xbgr8888.c
-index 2492054..0b35a09 100644
+index 2492054..c97c6a7 100644
 --- a/src/plot/32bpp-xbgr8888.c
 +++ b/src/plot/32bpp-xbgr8888.c
-@@ -28,7 +28,40 @@ static inline uint32_t *get_xy_loc(nsfb_t *nsfb, int x, int y)
+@@ -28,7 +28,9 @@ static inline uint32_t *get_xy_loc(nsfb_t *nsfb, int x, int y)
          return (void *)(nsfb->ptr + (y * nsfb->linelen) + (x << 2));
  }
  
 -#ifdef NSFB_BE_BYTE_ORDER
-+#if defined(GEKKO)
-+
-+/* Decoded-image RAM surfaces of this format are populated two ways: image
-+ * decoders memcpy raw R,G,B,A bytes directly into the buffer (see
-+ * frontends/framebuffer/bitmap.c's bitmap_get_buffer()), and NetSurf's own
-+ * plotters draw into it (e.g. for thumbnails) via colour_to_pixel() below.
-+ * Both have to agree on the same physical byte layout, or a bitmap that's
-+ * partly decoder-written and partly plotter-drawn would have inconsistent
-+ * colours. Storing the canonical value such that a native (big endian)
-+ * store produces bytes R,G,B,A keeps that agreement, and matches the
-+ * generic big-endian formula's little-endian counterpart below, which is
-+ * a byte-order identity for the same reason on little-endian hosts. */
-+
-+static inline nsfb_colour_t pixel_to_colour(UNUSED nsfb_t *nsfb, uint32_t pixel)
-+{
-+        /* bytes R,G,B,A loaded as a big endian word -> 0xRRGGBBAA;
-+         * convert to canonical 0xAABBGGRR, alpha forced opaque to match
-+         * the little endian identity conversion below. */
-+        return 0xFF000000U |
-+               ((pixel >> 24) & 0x000000FFU) |
-+               ((pixel >> 8)  & 0x0000FF00U) |
-+               ((pixel << 8)  & 0x00FF0000U);
-+}
-+
-+static inline uint32_t colour_to_pixel(UNUSED nsfb_t *nsfb, nsfb_colour_t c)
-+{
-+        /* 0xAABBGGRR -> a word that stores as bytes R,G,B,A */
-+        return ((c & 0x000000FFU) << 24) |
-+               ((c & 0x0000FF00U) << 8)  |
-+               ((c & 0x00FF0000U) >> 8)  |
-+               ((c >> 24) & 0x000000FFU);
-+}
-+
-+#elif defined(NSFB_BE_BYTE_ORDER)
++/* On the Wii this format only backs RAM bitmaps, which the frontend asks the
++ * core to fill with native 0xAABBGGRR words, so no byte swapping is needed. */
++#if defined(NSFB_BE_BYTE_ORDER) && !defined(GEKKO)
  
  /**
   * convert a 32bpp big endian pixel value to netsurf colour
@@ -103,144 +87,16 @@ index 28e6673..04a8cde 100644
  
  /**
   * convert a 32bpp big endian pixel value to netsurf colour
-diff --git a/src/plot/api.c b/src/plot/api.c
-index 1746d2e..5daa295 100644
---- a/src/plot/api.c
-+++ b/src/plot/api.c
-@@ -1,6 +1,7 @@
- /* public plotter interface */
- 
- #include <stdbool.h>
-+#include <stdlib.h>
- 
- #include "libnsfb.h"
- #include "libnsfb_plot.h"
-@@ -126,18 +127,62 @@ bool nsfb_plot_ellipse_fill(nsfb_t *nsfb, nsfb_bbox_t *ellipse, nsfb_colour_t c)
-     return nsfb->plotter_fns->ellipse_fill(nsfb, ellipse, c);
- }
- 
-+#ifdef GEKKO
-+/* Decoded-image RAM surfaces (NSFB_FMT_XBGR8888/ABGR8888) hold raw R,G,B,A
-+ * bytes written directly by image decoders, independent of that format's
-+ * own pixel_to_colour(). The fast path below reinterprets those bytes as
-+ * an nsfb_colour_t array and hands them straight to the destination
-+ * surface's own colour_to_pixel(), skipping any conversion -- which is
-+ * only valid because on little endian a native load of bytes R,G,B,A
-+ * happens to equal this library's canonical 0xAABBGGRR already. On big
-+ * endian Wii hardware the same load instead produces 0xRRGGBBAA, so every
-+ * channel lands in the wrong bit position downstream. Build an explicit,
-+ * byte-order-independent canonical copy first. */
-+static nsfb_colour_t *
-+wii_bitmap_to_colour(nsfb_t *srcfb)
-+{
-+    int total = srcfb->width * srcfb->height;
-+    int i;
-+    const unsigned char *srcbytes = (const unsigned char *)srcfb->ptr;
-+    nsfb_colour_t *out;
-+
-+    if (total <= 0)
-+        return NULL;
-+
-+    out = malloc((size_t)total * sizeof(nsfb_colour_t));
-+    if (out == NULL)
-+        return NULL;
-+
-+    for (i = 0; i < total; i++) {
-+        const unsigned char *p = srcbytes + ((size_t)i * 4);
-+        out[i] = ((nsfb_colour_t)p[3] << 24) |
-+                 ((nsfb_colour_t)p[2] << 16) |
-+                 ((nsfb_colour_t)p[1] << 8)  |
-+                  (nsfb_colour_t)p[0];
-+    }
-+
-+    return out;
-+}
-+#endif
-+
- /* copy an area of surface from one location to another.
-  *
-  * @warning This implementation is woefully incomplete!
-  */
- bool
--nsfb_plot_copy(nsfb_t *srcfb, 
--	       nsfb_bbox_t *srcbox, 
--	       nsfb_t *dstfb, 
-+nsfb_plot_copy(nsfb_t *srcfb,
-+	       nsfb_bbox_t *srcbox,
-+	       nsfb_t *dstfb,
- 	       nsfb_bbox_t *dstbox)
- {
-     bool trans = false;
-     nsfb_colour_t srccol;
-+    const nsfb_colour_t *blit_src;
-+#ifdef GEKKO
-+    nsfb_colour_t *converted = NULL;
-+    bool src_is_decoded_bitmap = (srcfb->format == NSFB_FMT_XBGR8888) ||
-+            (srcfb->format == NSFB_FMT_ABGR8888);
-+#endif
- 
-     if (srcfb == dstfb) {
- 	return dstfb->plotter_fns->copy(srcfb, srcbox, dstbox);
-@@ -148,19 +193,46 @@ nsfb_plot_copy(nsfb_t *srcfb,
-     }
- 
-     if ((srcfb->width == 1) && (srcfb->height == 1)) {
-+#ifdef GEKKO
-+	if (src_is_decoded_bitmap) {
-+	    const unsigned char *p = (const unsigned char *)srcfb->ptr;
-+	    srccol = ((nsfb_colour_t)p[3] << 24) | ((nsfb_colour_t)p[2] << 16) |
-+	             ((nsfb_colour_t)p[1] << 8)  |  (nsfb_colour_t)p[0];
-+	} else
-+#endif
- 	srccol = *(nsfb_colour_t *)(void *)(srcfb->ptr);
--	
-+
- 	/* check for completely transparent */
- 	if ((srccol & 0xff000000) == 0)
--	    return true; 
-+	    return true;
- 
- 	/* completely opaque pixels can be replaced with fill */
- 	if ((srccol & 0xff000000) == 0xff000000)
- 	    return dstfb->plotter_fns->fill(dstfb, dstbox, srccol);
-     }
- 
--    return dstfb->plotter_fns->bitmap(dstfb, dstbox, (const nsfb_colour_t *)(void *)srcfb->ptr, srcfb->width, srcfb->height, (srcfb->linelen * 8) / srcfb->bpp, trans);
--    
-+    blit_src = (const nsfb_colour_t *)(void *)srcfb->ptr;
-+#ifdef GEKKO
-+    if (src_is_decoded_bitmap) {
-+        converted = wii_bitmap_to_colour(srcfb);
-+        if (converted != NULL)
-+            blit_src = converted;
-+    }
-+#endif
-+
-+    {
-+        bool ret = dstfb->plotter_fns->bitmap(dstfb, dstbox, blit_src,
-+                srcfb->width, srcfb->height,
-+#ifdef GEKKO
-+                (converted != NULL) ? srcfb->width :
-+#endif
-+                (srcfb->linelen * 8) / srcfb->bpp,
-+                trans);
-+#ifdef GEKKO
-+        free(converted);
-+#endif
-+        return ret;
-+    }
- }
- 
- bool nsfb_plot_bitmap(nsfb_t *nsfb, const nsfb_bbox_t *loc, const nsfb_colour_t *pixel, int bmp_width, int bmp_height, int bmp_stride, bool alpha)
 diff --git a/src/surface/sdl.c b/src/surface/sdl.c
-index 8a73581..a6f8afa 100644
+index 8a73581..8882c8c 100644
 --- a/src/surface/sdl.c
 +++ b/src/surface/sdl.c
-@@ -10,6 +10,14 @@
+@@ -10,6 +10,15 @@
  #include <stdlib.h>
  #include <SDL/SDL.h>
  
 +#ifdef GEKKO
++#include <math.h>
 +#include <gccore.h>
 +#include <ogc/usbmouse.h>
 +#include <wiiuse/wpad.h>
@@ -251,7 +107,7 @@ index 8a73581..a6f8afa 100644
  #include "libnsfb.h"
  #include "libnsfb_event.h"
  #include "libnsfb_plot.h"
-@@ -21,6 +29,335 @@
+@@ -21,6 +30,651 @@
  #include "plot.h"
  #include "cursor.h"
  
@@ -267,14 +123,25 @@ index 8a73581..a6f8afa 100644
 + *
 + * What SDL-wii does not cover, and what is still handled here, is the D-pad,
 + * Plus/Minus, 1/2 and Home on any channel, the buttons of remotes two to four,
-+ * Wii U Pro Controllers via libwupc, and GameCube pads. */
++ * expansion controllers, Wii U Pro Controllers via libwupc, GameCube pads, and
++ * USB keyboards and mice. */
 +
 +/* Minimum interval between hardware polls, in milliseconds. Rescanning on
 + * every call meant a WPAD scan and an SI transfer for each iteration of
 + * NetSurf's event loop. */
 +#define WII_POLL_INTERVAL_MS 16
 +
-+static SDL_Joystick *wii_pointer_joystick;
++/* Pointer speed at full stick deflection, in pixels per poll. */
++#define WII_STICK_POINTER_SPEED 10.0f
++/* Mouse wheel steps per poll at full stick deflection. */
++#define WII_STICK_SCROLL_SPEED 0.12f
++/* Fraction of stick travel ignored around the centre. */
++#define WII_STICK_DEADZONE 0.2f
++#define WII_DEGREES_TO_RADIANS (3.14159265f / 180.0f)
++
++#define WII_KEY_REPEAT_DELAY_MS 400
++#define WII_KEY_REPEAT_INTERVAL_MS 40
++
 +static u32 wii_previous_buttons;
 +static u32 wii_last_poll_ticks;
 +static u32 wii_polled_buttons;
@@ -282,25 +149,32 @@ index 8a73581..a6f8afa 100644
 +static u8 wii_usb_mouse_buttons;
 +static bool wii_usb_keyboard_ready;
 +static bool wii_usb_mouse_ready;
++static float wii_stick_dx;
++static float wii_stick_dy;
++static float wii_stick_scroll;
++static enum nsfb_key_code_e wii_repeat_keycode;
++static u8 wii_repeat_hid_code;
++static u32 wii_repeat_ticks;
 +
-+/* libogc's USB HID drivers are independent from SDL's Wii backend. Keep a
-+ * local queue so one HID report can yield movement, wheel, and button events. */
-+#define WII_USB_EVENT_QUEUE_SIZE 16
-+static nsfb_event_t wii_usb_events[WII_USB_EVENT_QUEUE_SIZE];
-+static unsigned int wii_usb_event_head;
-+static unsigned int wii_usb_event_count;
++/* Keep a local queue so one input can yield several events: a mouse report
++ * can carry movement, wheel and buttons, and zooming sends a Ctrl sequence. */
++#define WII_EVENT_QUEUE_SIZE 32
++/* Room one keyboard and one mouse report can need in the queue. */
++#define WII_EVENT_QUEUE_REPORT_SPACE 6
++static nsfb_event_t wii_events[WII_EVENT_QUEUE_SIZE];
++static unsigned int wii_event_head;
++static unsigned int wii_event_count;
 +
-+static void wii_usb_queue_event(enum nsfb_event_type_e type,
++static void wii_queue_event(enum nsfb_event_type_e type,
 +        enum nsfb_key_code_e keycode, int x, int y)
 +{
 +    nsfb_event_t *event;
 +    unsigned int tail;
 +
-+    if (wii_usb_event_count == WII_USB_EVENT_QUEUE_SIZE)
++    if (wii_event_count == WII_EVENT_QUEUE_SIZE)
 +        return;
-+    tail = (wii_usb_event_head + wii_usb_event_count) %
-+            WII_USB_EVENT_QUEUE_SIZE;
-+    event = &wii_usb_events[tail];
++    tail = (wii_event_head + wii_event_count) % WII_EVENT_QUEUE_SIZE;
++    event = &wii_events[tail];
 +    event->type = type;
 +    if (type == NSFB_EVENT_MOVE_RELATIVE) {
 +        event->value.vector.x = x;
@@ -309,23 +183,55 @@ index 8a73581..a6f8afa 100644
 +    } else {
 +        event->value.keycode = keycode;
 +    }
-+    wii_usb_event_count++;
++    wii_event_count++;
 +}
 +
-+static bool wii_usb_dequeue_event(nsfb_event_t *event)
++static void wii_queue_key(enum nsfb_event_type_e type,
++        enum nsfb_key_code_e keycode)
 +{
-+    if (wii_usb_event_count == 0)
++    wii_queue_event(type, keycode, 0, 0);
++}
++
++static bool wii_dequeue_event(nsfb_event_t *event)
++{
++    if (wii_event_count == 0)
 +        return false;
-+    *event = wii_usb_events[wii_usb_event_head];
-+    wii_usb_event_head = (wii_usb_event_head + 1) % WII_USB_EVENT_QUEUE_SIZE;
-+    wii_usb_event_count--;
++    *event = wii_events[wii_event_head];
++    wii_event_head = (wii_event_head + 1) % WII_EVENT_QUEUE_SIZE;
++    wii_event_count--;
 +    return true;
 +}
 +
++s32 __real_KEYBOARD_GetEvent(keyboard_event *event);
++s32 __real_MOUSE_GetEvent(mouse_event *event);
++s32 __wrap_KEYBOARD_GetEvent(keyboard_event *event);
++s32 __wrap_MOUSE_GetEvent(mouse_event *event);
++
++/* SDL-wii's event pump drains the same destructive HID queues as this file,
++ * so each report reached only one of the two. The link wraps both readers so
++ * SDL always finds them empty and only the __real_ calls below see reports. */
++s32 __wrap_KEYBOARD_GetEvent(keyboard_event *event)
++{
++    (void)event;
++    return 0;
++}
++
++s32 __wrap_MOUSE_GetEvent(mouse_event *event)
++{
++    (void)event;
++    return 0;
++}
++
++/* Printable ASCII and Latin-1 keysyms are passed through as their character
++ * codes, which the frontend maps to themselves. */
 +static enum nsfb_key_code_e wii_usb_keycode(u16 symbol)
 +{
-+    if (symbol <= NSFB_KEY_DELETE)
++    if (symbol <= NSFB_KEY_DELETE || (symbol >= 0xa0 && symbol <= 0xff))
 +        return (enum nsfb_key_code_e)symbol;
++
++    /* Keypad keys that produce ASCII are that character plus 0xf200. */
++    if ((symbol & 0xff80) == 0xf200)
++        return (enum nsfb_key_code_e)(symbol & 0x7f);
 +
 +    switch (symbol) {
 +    case KS_Shift_L: return NSFB_KEY_LSHIFT;
@@ -338,16 +244,25 @@ index 8a73581..a6f8afa 100644
 +    case KS_Meta_R: return NSFB_KEY_RMETA;
 +    case KS_Caps_Lock: return NSFB_KEY_CAPSLOCK;
 +    case KS_Num_Lock: return NSFB_KEY_NUMLOCK;
-+    case KS_KP_Enter: return NSFB_KEY_RETURN;
++    case KS_KP_Home:
 +    case KS_Home: return NSFB_KEY_HOME;
++    case KS_KP_End:
 +    case KS_End: return NSFB_KEY_END;
++    case KS_KP_Prior:
 +    case KS_Prior: return NSFB_KEY_PAGEUP;
++    case KS_KP_Next:
 +    case KS_Next: return NSFB_KEY_PAGEDOWN;
++    case KS_KP_Up:
 +    case KS_Up: return NSFB_KEY_UP;
++    case KS_KP_Down:
 +    case KS_Down: return NSFB_KEY_DOWN;
++    case KS_KP_Left:
 +    case KS_Left: return NSFB_KEY_LEFT;
++    case KS_KP_Right:
 +    case KS_Right: return NSFB_KEY_RIGHT;
++    case KS_KP_Insert:
 +    case KS_Insert: return NSFB_KEY_INSERT;
++    case KS_KP_Delete: return NSFB_KEY_DELETE;
 +    case KS_F1: return NSFB_KEY_F1;
 +    case KS_F2: return NSFB_KEY_F2;
 +    case KS_F3: return NSFB_KEY_F3;
@@ -364,58 +279,124 @@ index 8a73581..a6f8afa 100644
 +    }
 +}
 +
-+static bool wii_usb_input_event(nsfb_event_t *event)
++static bool wii_is_modifier_key(enum nsfb_key_code_e keycode)
++{
++    switch (keycode) {
++    case NSFB_KEY_LSHIFT:
++    case NSFB_KEY_RSHIFT:
++    case NSFB_KEY_LCTRL:
++    case NSFB_KEY_RCTRL:
++    case NSFB_KEY_LALT:
++    case NSFB_KEY_RALT:
++    case NSFB_KEY_LMETA:
++    case NSFB_KEY_RMETA:
++    case NSFB_KEY_CAPSLOCK:
++    case NSFB_KEY_NUMLOCK:
++        return true;
++    default:
++        return false;
++    }
++}
++
++
++static bool wii_usb_keyboard_report(void)
 +{
 +    keyboard_event keyboard;
-+    mouse_event mouse;
++    enum nsfb_key_code_e keycode;
 +
-+    if (wii_usb_dequeue_event(event))
-+        return true;
-+
-+    if (wii_usb_keyboard_ready && KEYBOARD_GetEvent(&keyboard)) {
-+        enum nsfb_key_code_e keycode = wii_usb_keycode(keyboard.symbol);
-+
-+        if ((keyboard.type == KEYBOARD_PRESSED ||
-+                keyboard.type == KEYBOARD_RELEASED) &&
-+                keycode != NSFB_KEY_UNKNOWN) {
-+            event->type = keyboard.type == KEYBOARD_PRESSED ?
-+                    NSFB_EVENT_KEY_DOWN : NSFB_EVENT_KEY_UP;
-+            event->value.keycode = keycode;
-+            return true;
-+        }
-+    }
-+
-+    if (!wii_usb_mouse_ready || !MOUSE_GetEvent(&mouse))
++    if (!wii_usb_keyboard_ready || !__real_KEYBOARD_GetEvent(&keyboard))
 +        return false;
 +
-+    if (mouse.rx != 0 || mouse.ry != 0)
-+        wii_usb_queue_event(NSFB_EVENT_MOVE_RELATIVE, NSFB_KEY_UNKNOWN,
-+                mouse.rx, mouse.ry);
-+    if (mouse.rz > 0)
-+        wii_usb_queue_event(NSFB_EVENT_KEY_DOWN, NSFB_KEY_MOUSE_4, 0, 0);
-+    else if (mouse.rz < 0)
-+        wii_usb_queue_event(NSFB_EVENT_KEY_DOWN, NSFB_KEY_MOUSE_5, 0, 0);
++    if (keyboard.type != KEYBOARD_PRESSED &&
++            keyboard.type != KEYBOARD_RELEASED)
++        return true;
 +
-+    {
-+        static const u8 button_masks[] = { 1, 4, 2 };
-+        static const enum nsfb_key_code_e button_keys[] = {
-+            NSFB_KEY_MOUSE_1, NSFB_KEY_MOUSE_2, NSFB_KEY_MOUSE_3
-+        };
-+        u8 changed = mouse.button ^ wii_usb_mouse_buttons;
-+        unsigned int index;
++    keycode = wii_usb_keycode(keyboard.symbol);
++    if (keycode == NSFB_KEY_UNKNOWN)
++        return true;
 +
-+        for (index = 0; index < sizeof(button_masks) / sizeof(button_masks[0]);
-+                index++) {
-+            if ((changed & button_masks[index]) != 0) {
-+                wii_usb_queue_event((mouse.button & button_masks[index]) != 0 ?
-+                        NSFB_EVENT_KEY_DOWN : NSFB_EVENT_KEY_UP,
-+                        button_keys[index], 0, 0);
-+            }
-+        }
-+        wii_usb_mouse_buttons = mouse.button;
++    if (keyboard.modifiers & (MOD_CONTROL_L | MOD_CONTROL_R)) {
++        /* Shortcuts such as Ctrl+Shift+Z match on the lower case key. */
++        if (keycode >= 'A' && keycode <= 'Z')
++            keycode = (enum nsfb_key_code_e)(keycode + ('a' - 'A'));
++    } else if (keycode >= ' ' && keycode <= 0xff &&
++            keycode != NSFB_KEY_DELETE) {
++        /* libogc has already applied Shift and the keyboard layout. */
++        keycode = (enum nsfb_key_code_e)(NSFB_KEY_CHARACTER + keycode);
 +    }
 +
-+    return wii_usb_dequeue_event(event);
++    if (keyboard.type == KEYBOARD_RELEASED) {
++        if (keyboard.keycode == wii_repeat_hid_code)
++            wii_repeat_keycode = NSFB_KEY_UNKNOWN;
++        wii_queue_key(NSFB_EVENT_KEY_UP, keycode);
++        return true;
++    }
++
++    wii_queue_key(NSFB_EVENT_KEY_DOWN, keycode);
++    if (!wii_is_modifier_key(keycode)) {
++        wii_repeat_keycode = keycode;
++        wii_repeat_hid_code = keyboard.keycode;
++        wii_repeat_ticks = SDL_GetTicks() + WII_KEY_REPEAT_DELAY_MS;
++    }
++    return true;
++}
++
++/* libogc reports a key only when it changes, so held keys repeat here. */
++static void wii_usb_key_repeat(u32 now)
++{
++    if (wii_repeat_keycode == NSFB_KEY_UNKNOWN ||
++            (s32)(now - wii_repeat_ticks) < 0)
++        return;
++
++    wii_queue_key(NSFB_EVENT_KEY_DOWN, wii_repeat_keycode);
++    wii_repeat_ticks = now + WII_KEY_REPEAT_INTERVAL_MS;
++}
++
++static bool wii_usb_mouse_report(void)
++{
++    static const u8 button_masks[] = { 1, 4, 2 };
++    static const enum nsfb_key_code_e button_keys[] = {
++        NSFB_KEY_MOUSE_1, NSFB_KEY_MOUSE_2, NSFB_KEY_MOUSE_3
++    };
++    mouse_event mouse;
++    u8 changed;
++    unsigned int index;
++
++    if (!wii_usb_mouse_ready || !__real_MOUSE_GetEvent(&mouse))
++        return false;
++
++    /* Doubled, as SDL-wii did, so a 640 pixel wide screen is not sluggish. */
++    if (mouse.rx != 0 || mouse.ry != 0)
++        wii_queue_event(NSFB_EVENT_MOVE_RELATIVE, NSFB_KEY_UNKNOWN,
++                mouse.rx * 2, mouse.ry * 2);
++    if (mouse.rz > 0)
++        wii_queue_key(NSFB_EVENT_KEY_DOWN, NSFB_KEY_MOUSE_4);
++    else if (mouse.rz < 0)
++        wii_queue_key(NSFB_EVENT_KEY_DOWN, NSFB_KEY_MOUSE_5);
++
++    changed = mouse.button ^ wii_usb_mouse_buttons;
++    for (index = 0; index < sizeof(button_masks) / sizeof(button_masks[0]);
++            index++) {
++        if ((changed & button_masks[index]) != 0) {
++            wii_queue_key((mouse.button & button_masks[index]) != 0 ?
++                    NSFB_EVENT_KEY_DOWN : NSFB_EVENT_KEY_UP,
++                    button_keys[index]);
++        }
++    }
++    wii_usb_mouse_buttons = mouse.button;
++
++    return true;
++}
++
++static void wii_usb_input(void)
++{
++    bool got_report;
++
++    do {
++        got_report = wii_usb_keyboard_report();
++        got_report = wii_usb_mouse_report() || got_report;
++    } while (got_report && wii_event_count <=
++            WII_EVENT_QUEUE_SIZE - WII_EVENT_QUEUE_REPORT_SPACE);
 +}
 +
 +static u32 wii_canonical_buttons(u32 pressed)
@@ -459,53 +440,43 @@ index 8a73581..a6f8afa 100644
 +    if (pressed != 0)
 +        return pressed;
 +
-+    for (channel = 0; channel < 4; channel++)
-+        pressed |= WPAD_ButtonsHeld(channel);
-+    pressed = wii_canonical_buttons(pressed);
++    for (channel = 0; channel < 4; channel++) {
++        u32 held = WPAD_ButtonsHeld(channel);
 +
-+    /* SDL already reports channel zero's A and B as mouse buttons. Suppress
-+     * them here unless another channel is holding them, so that a single
-+     * press is not reported twice. */
-+    if ((pressed & (WPAD_BUTTON_A | WPAD_BUTTON_B)) != 0) {
-+        u32 others = 0;
-+
-+        for (channel = 1; channel < 4; channel++)
-+            others |= WPAD_ButtonsHeld(channel);
-+        others = wii_canonical_buttons(others);
-+
-+        pressed &= ~(WPAD_BUTTON_A | WPAD_BUTTON_B);
-+        pressed |= others & (WPAD_BUTTON_A | WPAD_BUTTON_B);
++        /* SDL already reports channel zero's own A and B as mouse buttons;
++         * a Classic Controller's A and B on that channel are still ours. */
++        if (channel == 0)
++            held &= ~(WPAD_BUTTON_A | WPAD_BUTTON_B);
++        pressed |= wii_canonical_buttons(held);
 +    }
 +
 +    if (pressed != 0)
 +        return pressed;
 +
-+    if (PAD_ScanPads() > PAD_ERR_NONE) {
-+        for (channel = 0; channel < 4; channel++)
-+            gcpressed |= PAD_ButtonsHeld(channel);
-+        if (gcpressed & PAD_TRIGGER_R)
-+            pressed |= WPAD_BUTTON_PLUS;
-+        if (gcpressed & PAD_TRIGGER_L)
-+            pressed |= WPAD_BUTTON_MINUS;
-+        if (gcpressed & PAD_BUTTON_A)
-+            pressed |= WPAD_BUTTON_A;
-+        if (gcpressed & PAD_BUTTON_B)
-+            pressed |= WPAD_BUTTON_B;
-+        if (gcpressed & PAD_BUTTON_X)
-+            pressed |= WPAD_BUTTON_2;
-+        if (gcpressed & PAD_BUTTON_Y)
-+            pressed |= WPAD_BUTTON_1;
-+        if (gcpressed & PAD_BUTTON_MENU)
-+            pressed |= WPAD_BUTTON_HOME;
-+        if (gcpressed & PAD_BUTTON_UP)
-+            pressed |= WPAD_BUTTON_UP;
-+        if (gcpressed & PAD_BUTTON_DOWN)
-+            pressed |= WPAD_BUTTON_DOWN;
-+        if (gcpressed & PAD_BUTTON_LEFT)
-+            pressed |= WPAD_BUTTON_LEFT;
-+        if (gcpressed & PAD_BUTTON_RIGHT)
-+            pressed |= WPAD_BUTTON_RIGHT;
-+    }
++    for (channel = 0; channel < 4; channel++)
++        gcpressed |= PAD_ButtonsHeld(channel);
++    if (gcpressed & PAD_TRIGGER_R)
++        pressed |= WPAD_BUTTON_PLUS;
++    if (gcpressed & PAD_TRIGGER_L)
++        pressed |= WPAD_BUTTON_MINUS;
++    if (gcpressed & PAD_BUTTON_A)
++        pressed |= WPAD_BUTTON_A;
++    if (gcpressed & PAD_BUTTON_B)
++        pressed |= WPAD_BUTTON_B;
++    if (gcpressed & PAD_BUTTON_X)
++        pressed |= WPAD_BUTTON_2;
++    if (gcpressed & PAD_BUTTON_Y)
++        pressed |= WPAD_BUTTON_1;
++    if (gcpressed & PAD_BUTTON_MENU)
++        pressed |= WPAD_BUTTON_HOME;
++    if (gcpressed & PAD_BUTTON_UP)
++        pressed |= WPAD_BUTTON_UP;
++    if (gcpressed & PAD_BUTTON_DOWN)
++        pressed |= WPAD_BUTTON_DOWN;
++    if (gcpressed & PAD_BUTTON_LEFT)
++        pressed |= WPAD_BUTTON_LEFT;
++    if (gcpressed & PAD_BUTTON_RIGHT)
++        pressed |= WPAD_BUTTON_RIGHT;
 +    return pressed;
 +}
 +
@@ -522,8 +493,8 @@ index 8a73581..a6f8afa 100644
 +        NSFB_KEY_MOUSE_1, NSFB_KEY_MOUSE_3,
 +        NSFB_KEY_UP, NSFB_KEY_DOWN,
 +        NSFB_KEY_LEFT, NSFB_KEY_RIGHT,
-+        NSFB_KEY_PLUS, NSFB_KEY_MINUS,
-+        NSFB_KEY_PAGEUP, NSFB_KEY_PAGEDOWN, NSFB_KEY_ESCAPE
++        NSFB_KEY_EQUALS, NSFB_KEY_MINUS,
++        NSFB_KEY_PAGEUP, NSFB_KEY_PAGEDOWN, NSFB_KEY_UNKNOWN
 +    };
 +    u32 current;
 +    u32 changed;
@@ -536,15 +507,132 @@ index 8a73581..a6f8afa 100644
 +    changed = current ^ wii_previous_buttons;
 +
 +    for (index = 0; index < sizeof(masks) / sizeof(masks[0]); index++) {
-+        if ((changed & masks[index]) != 0) {
-+            event->type = (current & masks[index]) != 0 ?
-+                    NSFB_EVENT_KEY_DOWN : NSFB_EVENT_KEY_UP;
++        bool pressed = (current & masks[index]) != 0;
++
++        if ((changed & masks[index]) == 0)
++            continue;
++        wii_previous_buttons ^= masks[index];
++
++        switch (masks[index]) {
++        case WPAD_BUTTON_HOME:
++            /* There is no window manager to deliver a quit request. */
++            if (!pressed)
++                continue;
++            event->type = NSFB_EVENT_CONTROL;
++            event->value.controlcode = NSFB_CONTROL_QUIT;
++            return true;
++
++        case WPAD_BUTTON_PLUS:
++        case WPAD_BUTTON_MINUS:
++            /* Zoom as Ctrl+= and Ctrl+- do, rather than typing a character
++             * into whichever text field has focus. */
++            if (!pressed)
++                continue;
++            wii_queue_key(NSFB_EVENT_KEY_DOWN, NSFB_KEY_LCTRL);
++            wii_queue_key(NSFB_EVENT_KEY_DOWN, keys[index]);
++            wii_queue_key(NSFB_EVENT_KEY_UP, keys[index]);
++            wii_queue_key(NSFB_EVENT_KEY_UP, NSFB_KEY_LCTRL);
++            return wii_dequeue_event(event);
++
++        default:
++            event->type = pressed ? NSFB_EVENT_KEY_DOWN : NSFB_EVENT_KEY_UP;
 +            event->value.keycode = keys[index];
-+            wii_previous_buttons ^= masks[index];
 +            return true;
 +        }
 +    }
 +    return false;
++}
++
++/* Remove the dead zone and square the remainder for finer control near the
++ * centre; v and the result are in -1..1. */
++static float wii_stick_curve(float v)
++{
++    float magnitude = fabsf(v);
++
++    if (magnitude <= WII_STICK_DEADZONE)
++        return 0.0f;
++    if (magnitude > 1.0f)
++        magnitude = 1.0f;
++    magnitude = (magnitude - WII_STICK_DEADZONE) / (1.0f - WII_STICK_DEADZONE);
++    return (v < 0.0f) ? -(magnitude * magnitude) : magnitude * magnitude;
++}
++
++/* wiiuse measures a stick's angle clockwise from straight up. */
++static float wii_joystick_x(const joystick_t *js)
++{
++    return js->mag * sinf(js->ang * WII_DEGREES_TO_RADIANS);
++}
++
++static float wii_joystick_y(const joystick_t *js)
++{
++    return -js->mag * cosf(js->ang * WII_DEGREES_TO_RADIANS);
++}
++
++/* The first stick of a GameCube pad, Classic Controller or Wii U Pro
++ * Controller moves the pointer, since only the Wii Remote can aim one; the
++ * second stick, or a Nunchuk's, scrolls. */
++static void wii_stick_input(void)
++{
++    float px = 0.0f;
++    float py = 0.0f;
++    float sy = 0.0f;
++    unsigned int channel;
++    int dx;
++    int dy;
++
++    for (channel = 0; channel < 4; channel++) {
++        WPADData *wd = WPAD_Data(channel);
++
++        px += PAD_StickX(channel) / 80.0f;
++        py -= PAD_StickY(channel) / 80.0f;
++        sy -= PAD_SubStickY(channel) / 80.0f;
++
++        if (WUPC_Data(channel) != NULL) {
++            px += WUPC_lStickX(channel) / 1024.0f;
++            py -= WUPC_lStickY(channel) / 1024.0f;
++            sy -= WUPC_rStickY(channel) / 1024.0f;
++        }
++
++        if (wd == NULL || wd->err != WPAD_ERR_NONE)
++            continue;
++        if (wd->exp.type == WPAD_EXP_CLASSIC) {
++            px += wii_joystick_x(&wd->exp.classic.ljs);
++            py += wii_joystick_y(&wd->exp.classic.ljs);
++            sy += wii_joystick_y(&wd->exp.classic.rjs);
++        } else if (wd->exp.type == WPAD_EXP_NUNCHUK) {
++            sy += wii_joystick_y(&wd->exp.nunchuk.js);
++        }
++    }
++
++    px = wii_stick_curve(px);
++    py = wii_stick_curve(py);
++    sy = wii_stick_curve(sy);
++
++    /* Carry fractions of a pixel between polls so slow movement still moves. */
++    wii_stick_dx = (px == 0.0f) ? 0.0f :
++            wii_stick_dx + px * WII_STICK_POINTER_SPEED;
++    wii_stick_dy = (py == 0.0f) ? 0.0f :
++            wii_stick_dy + py * WII_STICK_POINTER_SPEED;
++    dx = (int)wii_stick_dx;
++    dy = (int)wii_stick_dy;
++    if (dx != 0 || dy != 0) {
++        wii_stick_dx -= dx;
++        wii_stick_dy -= dy;
++        wii_queue_event(NSFB_EVENT_MOVE_RELATIVE, NSFB_KEY_UNKNOWN, dx, dy);
++    }
++
++    wii_stick_scroll += sy * WII_STICK_SCROLL_SPEED;
++    if (sy == 0.0f) {
++        wii_stick_scroll = 0.0f;
++    } else if (wii_stick_scroll <= -1.0f) {
++        wii_stick_scroll += 1.0f;
++        wii_queue_key(NSFB_EVENT_KEY_DOWN, NSFB_KEY_MOUSE_4);
++        wii_queue_key(NSFB_EVENT_KEY_UP, NSFB_KEY_MOUSE_4);
++    } else if (wii_stick_scroll >= 1.0f) {
++        wii_stick_scroll -= 1.0f;
++        wii_queue_key(NSFB_EVENT_KEY_DOWN, NSFB_KEY_MOUSE_5);
++        wii_queue_key(NSFB_EVENT_KEY_UP, NSFB_KEY_MOUSE_5);
++    }
 +}
 +
 +/**
@@ -553,9 +641,7 @@ index 8a73581..a6f8afa 100644
 + *
 + * WPAD_ScanPads() is what keeps SDL-wii's own pointer and mouse button
 + * handling supplied with fresh data, so it has to happen here whether or not
-+ * this file has any use for the result. It is rate limited because
-+ * WUPC_UpdateButtonStats() and especially PAD_ScanPads(), which blocks on an
-+ * SI transfer, are far too expensive to run once per event loop iteration.
++ * this file has any use for the result.
 + *
 + * \return true when there may be an unreported button change to emit.
 + */
@@ -572,26 +658,120 @@ index 8a73581..a6f8afa 100644
 +
 +    wii_last_poll_ticks = now;
 +
-+    if (wii_pointer_joystick != NULL) {
-+        SDL_JoystickUpdate();
-+    }
 +    WPAD_ScanPads();
++    PAD_ScanPads();
 +
 +    wii_polled_buttons = wii_controller_buttons();
 +    wii_polled_valid = true;
 +
++    wii_stick_input();
++    wii_usb_key_repeat(now);
++
 +    return wii_polled_buttons != wii_previous_buttons;
 +}
++
++/* SDL-wii's UpdateRects wakes its presentation thread without taking that
++ * thread's lock, so an update made while it is drawing is not shown until
++ * some later update. Updates are therefore collected and sent together once
++ * NetSurf has finished a redraw pass, so a scroll's blit and the strip it
++ * uncovers reach the screen together, and the thread is woken again for a
++ * few frames afterwards. */
++#define WII_PRESENT_RETRIES 4
++#define WII_PENDING_RECTS 8
++
++static SDL_Rect wii_pending_rects[WII_PENDING_RECTS];
++static int wii_pending_count;
++static unsigned int wii_present_retries;
++static u32 wii_present_ticks;
++
++static void wii_queue_rect(SDL_Surface *screen, int x0, int y0, int x1, int y1)
++{
++    SDL_Rect *rect;
++
++    /* SDL_UpdateRect() takes an empty size to mean the whole screen and
++     * drops a rectangle that crosses the edge, so clip here instead. */
++    if (x0 < 0)
++        x0 = 0;
++    if (y0 < 0)
++        y0 = 0;
++    if (x1 > screen->w)
++        x1 = screen->w;
++    if (y1 > screen->h)
++        y1 = screen->h;
++    if (x1 <= x0 || y1 <= y0)
++        return;
++
++    if (wii_pending_count == WII_PENDING_RECTS) {
++        int index;
++
++        for (index = 0; index < wii_pending_count; index++) {
++            rect = &wii_pending_rects[index];
++            if (rect->x < x0)
++                x0 = rect->x;
++            if (rect->y < y0)
++                y0 = rect->y;
++            if (rect->x + rect->w > x1)
++                x1 = rect->x + rect->w;
++            if (rect->y + rect->h > y1)
++                y1 = rect->y + rect->h;
++        }
++        wii_pending_count = 0;
++    }
++
++    rect = &wii_pending_rects[wii_pending_count++];
++    rect->x = x0;
++    rect->y = y0;
++    rect->w = x1 - x0;
++    rect->h = y1 - y0;
++}
++
++static void wii_present(SDL_Surface *screen)
++{
++    u32 now = SDL_GetTicks();
++
++    if (wii_pending_count != 0) {
++        SDL_UpdateRects(screen, wii_pending_count, wii_pending_rects);
++        wii_pending_count = 0;
++        wii_present_retries = WII_PRESENT_RETRIES;
++        wii_present_ticks = now;
++        return;
++    }
++
++    if (wii_present_retries == 0 ||
++            (now - wii_present_ticks) < WII_POLL_INTERVAL_MS)
++        return;
++
++    wii_present_retries--;
++    wii_present_ticks = now;
++    SDL_UpdateRect(screen, 0, 0, 1, 1);
++}
 +#endif
++
++static void sdl_update_rect(SDL_Surface *screen, int x, int y, int w, int h)
++{
++#ifdef GEKKO
++    wii_queue_rect(screen, x, y, x + w, y + h);
++#else
++    SDL_UpdateRect(screen, x, y, w, h);
++#endif
++}
 +
  enum nsfb_key_code_e sdl_nsfb_map[] = {
      NSFB_KEY_UNKNOWN,
      NSFB_KEY_UNKNOWN,
-@@ -458,11 +795,31 @@ static int sdl_initialise(nsfb_t *nsfb)
+@@ -406,7 +1060,7 @@ sdlcopy(nsfb_t *nsfb, nsfb_bbox_t *srcbox, nsfb_bbox_t *dstbox)
+         nsfb_cursor_plot(nsfb, cursor);
+     }
+ 
+-    SDL_UpdateRect(sdl_screen, dst.x, dst.y, dst.w, dst.h);
++    sdl_update_rect(sdl_screen, dst.x, dst.y, dst.w, dst.h);
+ 
+     return true;
+ 
+@@ -458,11 +1112,27 @@ static int sdl_initialise(nsfb_t *nsfb)
          return -1;
  
      /* initialise SDL library */
--    if (SDL_Init(SDL_INIT_TIMER | SDL_INIT_VIDEO) < 0 ) {
 +#ifdef GEKKO
 +    PAD_Init();
 +    WPAD_Init();
@@ -600,11 +780,7 @@ index 8a73581..a6f8afa 100644
 +    wii_usb_keyboard_ready = KEYBOARD_Init(NULL) == 0;
 +    wii_usb_mouse_ready = MOUSE_Init() == 0;
 +#endif
-+    if (SDL_Init(SDL_INIT_TIMER | SDL_INIT_VIDEO
-+#ifdef GEKKO
-+                 | SDL_INIT_JOYSTICK
-+#endif
-+                 ) < 0 ) {
+     if (SDL_Init(SDL_INIT_TIMER | SDL_INIT_VIDEO) < 0 ) {
          fprintf(stderr, "Unable to init SDL: %s\n", SDL_GetError());
 +#ifdef GEKKO
 +        if (wii_usb_mouse_ready)
@@ -620,7 +796,7 @@ index 8a73581..a6f8afa 100644
      sdl_screen = SDL_SetVideoMode(nsfb->width,
                                    nsfb->height,
                                    nsfb->bpp,
-@@ -478,10 +835,20 @@ static int sdl_initialise(nsfb_t *nsfb)
+@@ -478,10 +1148,20 @@ static int sdl_initialise(nsfb_t *nsfb)
  
      switch (sdl_fmt->BitsPerPixel) {
      case 32:
@@ -641,37 +817,14 @@ index 8a73581..a6f8afa 100644
          break;
  
      default:
-@@ -512,12 +879,56 @@ static int sdl_initialise(nsfb_t *nsfb)
+@@ -512,12 +1192,29 @@ static int sdl_initialise(nsfb_t *nsfb)
      SDL_ShowCursor(SDL_DISABLE);
      SDL_EnableKeyRepeat(300, 50);
  
 +#ifdef GEKKO
-+    /* Wii SDL turns Remote IR and A/B into mouse events, but its event pump
-+     * only refreshes WPAD state while joystick zero is open and polled. */
-+    SDL_JoystickEventState(SDL_IGNORE);
-+    wii_pointer_joystick = SDL_JoystickOpen(0);
-+    /* Set IR data format AFTER SDL_JoystickOpen -- SDL's own WPAD init inside
-+     * JoystickOpen may reset the format to buttons-only, losing IR tracking.
-+     * WPAD_SetVRes maps the raw IR camera coordinates to a coordinate space;
-+     * that space must match the TV-visible (safe) area actually output by
-+     * VIDEO, not our logical nsfb surface size, or the pointer will never
-+     * reach the true edges/top of the picture whenever the two differ.
-+     * There is no VIDEO_GetCurrentMode(): the preferred mode returned here
-+     * is the same mode SDL-wii itself selects when it calls VIDEO_Init. */
-+    {
-+        unsigned int channel;
-+        unsigned int vres_w = nsfb->width;
-+        unsigned int vres_h = nsfb->height;
-+        GXRModeObj *vmode = VIDEO_GetPreferredMode(NULL);
-+        if (vmode != NULL) {
-+            vres_w = vmode->viWidth;
-+            vres_h = vmode->viHeight;
-+        }
-+        for (channel = 0; channel < 4; channel++) {
-+            WPAD_SetDataFormat(channel, WPAD_FMT_BTNS_ACC_IR);
-+            WPAD_SetVRes(channel, vres_w, vres_h);
-+        }
-+    }
++    /* Do not call WPAD_SetVRes() here: SDL-wii sized channel zero's IR range
++     * to 1.25x the screen and its event pump subtracts that margin, so a
++     * smaller range leaves the right and bottom edges unreachable. */
 +#endif
 +
      return 0;
@@ -681,10 +834,6 @@ index 8a73581..a6f8afa 100644
  {
      nsfb=nsfb;
 +#ifdef GEKKO
-+    if (wii_pointer_joystick != NULL) {
-+        SDL_JoystickClose(wii_pointer_joystick);
-+        wii_pointer_joystick = NULL;
-+    }
 +    if (wii_usb_mouse_ready) {
 +        MOUSE_Deinit();
 +        wii_usb_mouse_ready = false;
@@ -698,7 +847,7 @@ index 8a73581..a6f8afa 100644
      SDL_Quit();
      return 0;
  }
-@@ -545,6 +956,25 @@ static bool sdl_input(nsfb_t *nsfb, nsfb_event_t *event, int timeout)
+@@ -545,6 +1242,28 @@ static bool sdl_input(nsfb_t *nsfb, nsfb_event_t *event, int timeout)
  
      nsfb = nsfb; /* unused */
  
@@ -706,7 +855,10 @@ index 8a73581..a6f8afa 100644
 +    {
 +        bool button_change = wii_poll_controllers();
 +
-+        if (wii_usb_input_event(event)) {
++        wii_present(nsfb->surface_priv);
++
++        wii_usb_input();
++        if (wii_dequeue_event(event)) {
 +            return true;
 +        }
 +        if (button_change && wii_controller_event(event)) {
@@ -724,3 +876,61 @@ index 8a73581..a6f8afa 100644
      if (timeout == 0) {
          got_event = SDL_PollEvent(&sdlevent);
      } else {
+@@ -605,6 +1324,10 @@ static bool sdl_input(nsfb_t *nsfb, nsfb_event_t *event, int timeout)
+ 	case SDL_BUTTON_WHEELDOWN:
+ 	    event->value.keycode = NSFB_KEY_MOUSE_5;
+ 	    break;
++
++	default:
++	    event->type = NSFB_EVENT_NONE;
++	    break;
+ 	}
+ 	break;
+ 
+@@ -632,6 +1355,12 @@ static bool sdl_input(nsfb_t *nsfb, nsfb_event_t *event, int timeout)
+ 	case SDL_BUTTON_WHEELDOWN:
+ 	    event->value.keycode = NSFB_KEY_MOUSE_5;
+ 	    break;
++
++	default:
++	    /* Unmapped buttons, such as the X2 release SDL-wii posts with every
++	     * Wii Remote IR update, would otherwise reuse a stale key code. */
++	    event->type = NSFB_EVENT_NONE;
++	    break;
+ 	}
+ 	break;
+ 
+@@ -702,11 +1431,11 @@ sdl_cursor(nsfb_t *nsfb, struct nsfb_cursor_s *cursor)
+ 
+         nsfb_cursor_plot(nsfb, cursor);
+ 
+-        SDL_UpdateRect(sdl_screen,
+-                       redraw.x0,
+-                       redraw.y0,
+-                       redraw.x1 - redraw.x0,
+-                       redraw.y1 - redraw.y0);
++        sdl_update_rect(sdl_screen,
++                        redraw.x0,
++                        redraw.y0,
++                        redraw.x1 - redraw.x0,
++                        redraw.y1 - redraw.y0);
+ 
+ 
+     }
+@@ -724,11 +1453,11 @@ static int sdl_update(nsfb_t *nsfb, nsfb_bbox_t *box)
+         nsfb_cursor_plot(nsfb, cursor);
+     }
+ 
+-    SDL_UpdateRect(sdl_screen,
+-                   box->x0,
+-                   box->y0,
+-                   box->x1 - box->x0,
+-                   box->y1 - box->y0);
++    sdl_update_rect(sdl_screen,
++                    box->x0,
++                    box->y0,
++                    box->x1 - box->x0,
++                    box->y1 - box->y0);
+ 
+     return 0;
+ }
