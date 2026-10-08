@@ -1,4 +1,4 @@
-/* A standard definition TV signal blurs NetSurf's 1px grey field borders
+/* A standard definition TV signal blurs NetSurf's 1px gray field borders
  * away. As a user style sheet this only applies where the page does not
  * style its own fields. */
 input, textarea { border: 2px solid #000; margin: 1px 3px; }

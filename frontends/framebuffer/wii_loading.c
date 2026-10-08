@@ -34,7 +34,7 @@ static uint8_t *loading_frame; /**< the image with the status line on it */
 static FT_Library loading_library;
 static FT_Face loading_face;
 static SDL_Surface *loading_screen; /**< set once SDL has a video mode */
-static int loading_canvas_width; /**< SDL's width; the image is centred */
+static int loading_canvas_width; /**< SDL's width; the image is centered */
 static bool loading_drawn; /**< the whole frame is on the current screen */
 static void *loading_sdl_xfb; /**< SDL-wii's frame buffer */
 static uint32_t *loading_held_xfb; /**< shown instead while SDL starts */
@@ -119,7 +119,7 @@ loading_render(void)
 	if (loading_face == NULL)
 		return;
 
-	/* centre the text alone so the dots do not shift it */
+	/* center the text alone so the dots do not shift it */
 	x = (LOADING_WIDTH - loading_draw_text(loading_text, 0, false)) / 2;
 	x = loading_draw_text(loading_text, x, true);
 	if (loading_working)
@@ -163,7 +163,7 @@ loading_video_mode(void)
 }
 
 /* the image pixel at x across a canvas of the given width, with the image
- * centred on it and its edge colours carried out to the sides */
+ * centered on it and its edge colors carried out to the sides */
 static const uint8_t *
 loading_canvas_pixel(const uint8_t *row, int x, int width)
 {

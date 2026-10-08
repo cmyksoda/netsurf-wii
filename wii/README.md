@@ -197,7 +197,7 @@ NetSurf fetcher -> libcurl -> libogc BSD sockets -> Wii network interface
 - The framebuffer is 640x480x32, or 848x480x32 when the Wii is set to 16:9
   (`wii_screen_width()`): SDL-wii squeezes that mode into the TV signal and a
   widescreen TV stretches it back, so pages keep their shape and gain width.
-  The loading screen is centred across the wider mode with its edge colours
+  The loading screen is centered across the wider mode with its edge colors
   carried out to the sides, and the on-screen keyboard keeps its 4:3 height.
   Dropping to 16bpp would halve both the plot and the GX texture conversion
   bandwidth, but NetSurf's 16bpp plotters and SDL-wii's 16bpp path are

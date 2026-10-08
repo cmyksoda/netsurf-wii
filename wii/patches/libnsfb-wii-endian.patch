@@ -88,7 +88,7 @@ index 28e6673..04a8cde 100644
  /**
   * convert a 32bpp big endian pixel value to netsurf colour
 diff --git a/src/surface/sdl.c b/src/surface/sdl.c
-index 8a73581..8882c8c 100644
+index 8a73581..e5ac10f 100644
 --- a/src/surface/sdl.c
 +++ b/src/surface/sdl.c
 @@ -10,6 +10,15 @@
@@ -135,7 +135,7 @@ index 8a73581..8882c8c 100644
 +#define WII_STICK_POINTER_SPEED 10.0f
 +/* Mouse wheel steps per poll at full stick deflection. */
 +#define WII_STICK_SCROLL_SPEED 0.12f
-+/* Fraction of stick travel ignored around the centre. */
++/* Fraction of stick travel ignored around the center. */
 +#define WII_STICK_DEADZONE 0.2f
 +#define WII_DEGREES_TO_RADIANS (3.14159265f / 180.0f)
 +
@@ -544,7 +544,7 @@ index 8a73581..8882c8c 100644
 +}
 +
 +/* Remove the dead zone and square the remainder for finer control near the
-+ * centre; v and the result are in -1..1. */
++ * center; v and the result are in -1..1. */
 +static float wii_stick_curve(float v)
 +{
 +    float magnitude = fabsf(v);

@@ -8,13 +8,13 @@
  *
  * \param image_path A 640x480 PNG.
  * \param font_path The font for the status line.
- * \param width The width SDL will run at; the image is centred across it.
+ * \param width The width SDL will run at; the image is centered across it.
  */
 void wii_loading_start(const char *image_path, const char *font_path,
 		int width);
 
 /**
- * Show the loading screen with a status line, centred under the logo.
+ * Show the loading screen with a status line, centered under the logo.
  *
  * \param status The status, without trailing dots.
  * \param working Whether to animate dots after it.

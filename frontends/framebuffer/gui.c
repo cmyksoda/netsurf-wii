@@ -40,7 +40,7 @@
 #define WII_LOG(...) SYS_Report("NetSurf Wii: " __VA_ARGS__)
 
 /* #94aeff, behind the browser outside the TV-safe margin */
-#define WII_BACKGROUND_COLOUR 0xffffae94
+#define WII_BACKGROUND_COLOR 0xffffae94
 #else
 #define WII_LOG(...) ((void)0)
 #endif
@@ -2595,7 +2595,7 @@ main(int argc, char** argv)
 		nsfb_plot_set_clip(nsfb, &screen);
 		for (edge = 0; edge < sizeof(edges) / sizeof(edges[0]); edge++)
 			nsfb_plot_rectangle_fill(nsfb, &edges[edge],
-					WII_BACKGROUND_COLOUR);
+					WII_BACKGROUND_COLOR);
 		nsfb_update(nsfb, &screen);
 	}
 #endif
